@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RailControl IoT: 12V Motor Edition</title>
+    <style>
+        /* [Keeping your original styling here for the beautiful dashboard] */
+        :root { --bg: #121212; --card: #1e1e1e; --primary: #00d2ff; --secondary: #ff416c; --track: #333; --safe: #2ecc71; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        #map-container { width: 850px; height: 350px; position: relative; background: #080808; border-radius: 15px; border: 2px solid #333; margin-bottom: 20px; box-shadow: inset 0 0 50px #000; }
+        .svg-layer { position: absolute; width: 100%; height: 100%; z-index: 1; }
+        .track-line { stroke: var(--track); stroke-width: 6; fill: none; stroke-linecap: round; }
+        .station { position: absolute; width: 16px; height: 16px; background: #888; border-radius: 50%; z-index: 3; transform: translate(-50%, -50%); border: 3px solid #121212; }
+        .station-label { position: absolute; top: 22px; left: 50%; transform: translateX(-50%); font-size: 13px; color: #fff; font-weight: bold; }
+        .train { position: absolute; width: 36px; height: 22px; border-radius: 4px; z-index: 10; transform: translate(-50%, -50%); transition: transform 0.3s; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 11px; }
+        #t1 { background: var(--primary); box-shadow: 0 0 15px var(--primary); color: #000; }
+        #t2 { background: var(--secondary); box-shadow: 0 0 15px var(--secondary); color: #fff; }
+        .dashboard { display: flex; gap: 20px; width: 850px; }
+        .panel { flex: 1; background: var(--card); padding: 15px; border-radius: 12px; position: relative; }
+        .p1::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: var(--primary); }
+        .p2::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: var(--secondary); }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 15px 0; }
+        .val { font-family: 'Courier New', monospace; font-size: 15px; color: var(--safe); }
+        button { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; background: #333; color: white; }
+        button:disabled { opacity: 0.2; }
+    </style>
+</head>
+<body>
+
+    <h2>🚉 Train IoT Control Center</h2>
+    <p id="iot-status" style="color: #666;">Blynk Status: Standby</p>
+
+    <div id="map-container">
+        <svg class="svg-layer">
+            <path d="M 75 125 L 275 175 M 75 225 L 275 175 M 275 175 L 575 175 M 575 175 L 775 125 M 575 175 L 775 225" class="track-line" />
+        </svg>
+        <div id="stations"></div>
+        <div id="t1" class="train">REAL</div>
+        <div id="t2" class="train">SIM</div>
+    </div>
+
+    <div class="dashboard">
+        <div class="panel p1">
+            <b>TRAIN 01 (PHYSICAL)</b>
+            <div class="stat-grid">
+                <div>Loc: <span id="t1-loc" class="val">A</span></div>
+                <div>Status: <span id="t1-status" class="val">IDLE</span></div>
+            </div>
+            <div class="btn-group" style="display:flex; gap:10px;">
+                <button id="btn1-fwd" onclick="requestMove(0, 1)">Forward ➔</button>
+                <button id="btn1-rev" onclick="requestMove(0, -1)">⬅ Reverse</button>
+            </div>
+        </div>
+
+        <div class="panel p2">
+            <b>TRAIN 02 (VIRTUAL)</b>
+            <div class="stat-grid">
+                <div>Loc: <span id="t2-loc" class="val">B</span></div>
+                <div>Status: <span id="t2-status" class="val">IDLE</span></div>
+            </div>
+            <div class="btn-group" style="display:flex; gap:10px;">
+                <button id="btn2-fwd" onclick="requestMove(1, 1)">Forward ➔</button>
+                <button id="btn2-rev" onclick="requestMove(1, -1)">⬅ Reverse</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // --- IOT CONFIGURATION ---
+    const BLYNK_TOKEN = "YOUR_BLYNK_AUTH_TOKEN"; // PASTE YOUR TOKEN HERE
+    const MOTOR_SPEED = 200; // Speed from 0 to 255
+
+    async function sendToESP32(val) {
+        document.getElementById('iot-status').innerText = "Blynk: Sending Command...";
+        try {
+            await fetch(`https://blynk.cloud/external/api/update?token=${BLYNK_TOKEN}&V1=${val}`);
+            document.getElementById('iot-status').innerText = "Blynk: Command Sent";
+        } catch(e) {
+            document.getElementById('iot-status').innerText = "Blynk: Error!";
+        }
+    }
+
+    // --- ORIGINAL SIMULATOR LOGIC ---
+    const S = { A: {x: 75, y: 125}, B: {x: 75, y: 225}, C: {x: 275, y: 175}, D: {x: 575, y: 175}, E: {x: 775, y: 125}, F: {x: 775, y: 225} };
+    const trains = [
+        { id: 't1', route: ['A','C','D','E'], curIdx: 0, x: S.A.x, y: S.A.y, status: 'IDLE' },
+        { id: 't2', route: ['B','C','D','F'], curIdx: 0, x: S.B.x, y: S.B.y, status: 'IDLE' }
+    ];
+
+    function requestMove(tIdx, direction) {
+        const t = trains[tIdx];
+        const nextIdx = t.curIdx + direction;
+        if (nextIdx < 0 || nextIdx >= t.route.length) return;
+
+        // Simple Collision Logic
+        const other = trains[1 - tIdx];
+        if (other.route[other.curIdx] === t.route[nextIdx]) {
+            alert("Block Occupied!");
+            return;
+        }
+
+        executeMove(tIdx, nextIdx, direction);
+    }
+
+    function executeMove(tIdx, nextIdx, direction) {
+        const t = trains[tIdx];
+        t.status = 'MOVING';
+        
+        // PHYSICAL CONTROL: If it's Train 1, trigger ESP32
+        if (tIdx === 0) {
+            sendToESP32(direction === 1 ? MOTOR_SPEED : -MOTOR_SPEED);
+        }
+
+        const start = S[t.route[t.curIdx]];
+        const end = S[t.route[nextIdx]];
+        const totalDist = Math.sqrt(Math.pow(end.x-start.x, 2) + Math.pow(end.y-start.y, 2));
+        let current = 0;
+
+        const anim = setInterval(() => {
+            current += 2;
+            const pct = Math.min(current / totalDist, 1);
+            t.x = start.x + (end.x - start.x) * pct;
+            t.y = start.y + (end.y - start.y) * pct;
+            updateUI();
+
+            if (pct >= 1) {
+                clearInterval(anim);
+                t.curIdx = nextIdx;
+                t.status = 'IDLE';
+                // STOP PHYSICAL MOTOR
+                if (tIdx === 0) sendToESP32(0);
+                updateUI();
+            }
+        }, 30);
+    }
+
+    function updateUI() {
+        trains.forEach((t, i) => {
+            const el = document.getElementById(t.id);
+            el.style.left = t.x + 'px'; el.style.top = t.y + 'px';
+            document.getElementById(`${t.id}-status`).innerText = t.status;
+            document.getElementById(`${t.id}-loc`).innerText = t.route[t.curIdx];
+            document.getElementById(`btn${i+1}-fwd`).disabled = (t.status === 'MOVING' || t.curIdx >= t.route.length-1);
+            document.getElementById(`btn${i+1}-rev`).disabled = (t.status === 'MOVING' || t.curIdx <= 0);
+        });
+    }
+
+    // Init stations
+    Object.keys(S).forEach(key => {
+        const div = document.createElement('div');
+        div.className = 'station'; div.style.left = S[key].x + 'px'; div.style.top = S[key].y + 'px';
+        div.innerHTML = `<div class="station-label">${key}</div>`;
+        document.getElementById('stations').appendChild(div);
+    });
+    updateUI();
+</script>
+</body>
+</html>
